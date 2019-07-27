@@ -408,5 +408,5 @@ async.series([
     if (error) {
         return winston.error(error);
     }
-    winston.info('Listening at http://localhost:%s', config.port);
+    winston.info('Listening on http://localhost:%s', config.port);
 });
