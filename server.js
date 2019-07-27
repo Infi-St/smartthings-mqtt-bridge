@@ -265,7 +265,7 @@ function parseMQTTMessage (topic, message) {
     // Deduplicate only if the incoming message topic is the same as the read state topic
     if (topic === topicReadState) {
         if (history[topic] === contents) {
-            winston.info('Skipping duplicate message from: %s = %s', topic, contents);
+            winston.info('Skipping the duplicate message from: %s = %s', topic, contents);
             return;
         }
     }
