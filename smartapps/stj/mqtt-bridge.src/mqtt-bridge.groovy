@@ -470,11 +470,12 @@ preferences {
 def installed() {
     log.debug "Installed with settings: ${settings}"
 
-    runEvery15Minutes(initialize)
+    runEvery3Hours(initialize)
     initialize()
 }
 
 def updated() {
+
     log.debug "Updated with settings: ${settings}"
 
     // Unsubscribe from all events
@@ -494,12 +495,26 @@ def getDeviceNames(devices) {
 
 def initialize() {
     // Subscribe to new events from devices
+    unsubscribe()
     CAPABILITY_MAP.each { key, capability ->
-        capability["attributes"].each { attribute ->
-            subscribe(settings[key], attribute, inputHandler)
+    //log.debug "map to: ${key} ${capability}"
+        capability["attributes"].each { attribute -> 
+
+			if (settings[key] != null) {            	
+            	subscribe(settings[key], attribute, inputHandler)
+                settings[key].each { device ->   
+                	//log.debug "Initialize: ${device.displayName}.${attribute} to ${device.currentValue(attribute).toString()}"
+                	forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)        
+                }
+            	//log.debug "Subscribing to: ${settings[key]} ${attribute}"
+             }
+             else {
+             //log.debug "Not Subscribing to: ${settings[key]} ${attribute}"
+             }
+ 
         }
     }
-
+    subscribe(location, "routineExecuted", inputHandler)
     // Subscribe to events from the bridge
     subscribe(bridge, "message", bridgeHandler)
 
@@ -510,7 +525,8 @@ def initialize() {
 // Update the bridge"s subscription
 def updateSubscription() {
     def attributes = [
-        notify: ["Contacts", "System"]
+        notify: ["Contacts", "System"],
+        ExecuteRoutine: ["routine"]
     ]
     CAPABILITY_MAP.each { key, capability ->
         capability["attributes"].each { attribute ->
@@ -522,6 +538,7 @@ def updateSubscription() {
             }
         }
     }
+    
     def json = new groovy.json.JsonOutput().toJson([
         path: "/subscribe",
         body: [
@@ -536,9 +553,12 @@ def updateSubscription() {
 
 // Receive an event from the bridge
 def bridgeHandler(evt) {
+//state.ignoreEvent = json
+
     def json = new JsonSlurper().parseText(evt.value)
     log.debug "Received device event from bridge: ${json}"
-
+    log.debug "evt.name = ${evt.name} ${evt.description} ${evt.descriptionText}"
+    log.debug "(JSON) = ${json.type} ${json.name} ${json.command} ${json.value}"
     if (json.type == "notify") {
         if (json.name == "Contacts") {
             sendNotificationToContacts("${json.value}", recipients)
@@ -547,7 +567,22 @@ def bridgeHandler(evt) {
         }
         return
     }
+//Received device event from bridge: [command:true, name:routine, type:ExecuteRoutine, value:Relax Alexa Skill]
+//(JSON) = ExecuteRoutine routine true
 
+	if (json.type == "ExecuteRoutine")
+	{
+    	def actions = location.helloHome?.getPhrases()*.label
+        	actions.each { action ->
+            log.debug "${action}"
+            }
+		log.debug "Calling location.helloHome?.execute(${json.value})"
+        forwardEvent("routine", "executed", json.type)
+		location.helloHome?.execute(json.value)
+        forwardEvent("routine", "executed", json.type)
+		return
+	}
+    
     // @NOTE this is stored AWFUL, we need a faster lookup table
     // @NOTE this also has no fast fail, I need to look into how to do that
     CAPABILITY_MAP.each { key, capability ->
@@ -558,14 +593,28 @@ def bridgeHandler(evt) {
                         if (device.getSupportedCommands().any {it.name == "setStatus"}) {
                             log.debug "Setting state ${json.type} = ${json.value}"
                             device.setStatus(json.type, json.value)
-                            state.ignoreEvent = json;
+                            state.ignoreEvent = json
                         }
                     }
                     else {
                         if (capability.containsKey("action")) {
                             def action = capability["action"]
+                            log.debug "Calling ${action} = {$json.value} on ${device}"
                             // Yes, this is calling the method dynamically
                             "$action"(device, json.type, json.value)
+                            
+                           //if (device.currentValue(json.type) != json.value) {
+  							//	 log.debug "Retry1 Forward2 device = ${device.currentValue(json.type)}"
+  							//}
+  							//if (device.currentValue(json.type) != json.value) {
+  							//	log.debug "Retry2 Forward2 device = ${device.currentValue(json.type)}"
+                            //}
+  							//forwardEvent(device.displayName, device.currentValue(json.type).toString(), json.type)
+  							//log.debug "Forward2 device = ${device.currentValue(json.type)}"
+                                                        
+                        }
+                        else{
+                        log.debug "No Match found ${action} = {$json.value} on ${device}"
                         }
                     }
                 }
@@ -576,6 +625,9 @@ def bridgeHandler(evt) {
 
 // Receive an event from a device
 def inputHandler(evt) {
+
+log.debug "evt = ${evt.displayName} ${evt.value} ${evt.name}"
+
     if (
         state.ignoreEvent
         && state.ignoreEvent.name == evt.displayName
@@ -600,6 +652,19 @@ def inputHandler(evt) {
     }
 }
 
+def forwardEvent(displayName, value, name) {
+def json = new JsonOutput().toJson([
+            path: "/push",
+            body: [
+                name: displayName,
+                value: value,
+                type: name
+            ]
+        ])
+        log.debug "Forwarding2 device event to bridge: ${json}"
+        bridge.deviceNotification(json)
+}
+
 // +---------------------------------+
 // | WARNING, BEYOND HERE BE DRAGONS |
 // +---------------------------------+
@@ -622,6 +687,7 @@ def actionAlarm(device, attribute, value) {
             device.both()
         break
     }
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionColor(device, attribute, value) {
@@ -641,27 +707,37 @@ def actionColor(device, attribute, value) {
 }
 
 def actionOpenClosed(device, attribute, value) {
+
+	if (device.currentValue(attribute) == value) 
+    	return   
     if (value == "open") {
-        device.open()
+       	device.open()
     } else if (value == "closed") {
-        device.close()
+       	device.close()
     }
+	forwardEvent(device.displayName, value, attribute)
 }
 
 def actionOnOff(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     if (value == "off") {
         device.off()
     } else if (value == "on") {
         device.on()
-    }
+    }    
+    forwardEvent(device.displayName, value, attribute)
 }
 
 def actionActiveInactive(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     if (value == "active") {
         device.active()
     } else if (value == "inactive") {
         device.inactive()
     }
+    forwardEvent(device.displayName, value, attribute)
 }
 
 def actionThermostat(device, attribute, value) {
@@ -679,9 +755,11 @@ def actionThermostat(device, attribute, value) {
             device.setThermostatFanMode(value)
         break
     }
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionMusicPlayer(device, attribute, value) {
+    log.debug "actionMusicPlayer: ${attribute} ${value}"
     switch(attribute) {
         case "level":
             device.setLevel(value)
@@ -699,6 +777,7 @@ def actionMusicPlayer(device, attribute, value) {
             }
         break
     }
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionColorTemperature(device, attribute, value) {
@@ -710,44 +789,64 @@ def actionLevel(device, attribute, value) {
 }
 
 def actionPresence(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     if (value == "present") {
     	device.arrived();
     }
     else if (value == "not present") {
     	device.departed();
     }
+       forwardEvent(device.displayName, value, attribute)
 }
 
 def actionConsumable(device, attribute, value) {
     device.setConsumableStatus(value)
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionLock(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     if (value == "locked") {
         device.lock()
     } else if (value == "unlocked") {
         device.unlock()
     }
+    forwardEvent(device.displayName, value, attribute)
 }
 
 def actionCoolingThermostat(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     device.setCoolingSetpoint(value)
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionThermostatFan(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     device.setThermostatFanMode(value)
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionHeatingThermostat(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     device.setHeatingSetpoint(value)
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionThermostatMode(device, attribute, value) {
+	if (device.currentValue(attribute) == value) 
+    	return   
     device.setThermostatMode(value)
+    forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
 }
 
 def actionTimedSession(device, attribute, value) {
     if (attribute == "timeRemaining") {
         device.setTimeRemaining(value)
+        forwardEvent(device.displayName, device.currentValue(attribute).toString(), attribute)
     }
 }
